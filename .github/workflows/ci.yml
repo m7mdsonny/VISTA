@@ -1,0 +1,113 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: vista_test
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+      
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: --health-cmd="redis-cli ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, pdo_mysql, redis
+          coverage: none
+
+      - name: Install Composer Dependencies
+        working-directory: VISTA App/apps/api
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Copy Environment File
+        working-directory: VISTA App/apps/api
+        run: cp .env.example .env || true
+
+      - name: Generate Application Key
+        working-directory: VISTA App/apps/api
+        run: php artisan key:generate
+
+      - name: Configure Database
+        working-directory: VISTA App/apps/api
+        run: |
+          php artisan config:cache
+          php artisan migrate --database=mysql --force || true
+
+      - name: Run Tests
+        working-directory: VISTA App/apps/api
+        run: php artisan test --parallel
+
+      - name: Check Code Style (Laravel Pint)
+        working-directory: VISTA App/apps/api
+        run: vendor/bin/pint --test || true
+
+  flutter-tests:
+    name: Flutter Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Install Dependencies
+        working-directory: VISTA App/apps/mobile
+        run: flutter pub get
+
+      - name: Analyze Code
+        working-directory: VISTA App/apps/mobile
+        run: flutter analyze
+
+      - name: Run Tests
+        working-directory: VISTA App/apps/mobile
+        run: flutter test
+
+      - name: Build APK (for validation)
+        working-directory: VISTA App/apps/mobile
+        run: flutter build apk --release --no-tree-shake-icons || true
+
+  lint-and-format:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check PHP Code Style
+        working-directory: VISTA App/apps/api
+        run: |
+          composer install --no-interaction --no-progress
+          vendor/bin/pint --test || echo "Code style issues found"
+        continue-on-error: true
+
+      - name: Check Dart Code Style
+        working-directory: VISTA App/apps/mobile
+        run: |
+          flutter pub get
+          dart format --set-exit-if-changed . || echo "Dart formatting issues found"
+        continue-on-error: true
